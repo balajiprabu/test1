@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>Simple Flowchart Builder</title>
+  <style>
+    #flowchart-area {
+      width: 80%;
+      height: 400px;
+      border: 1px solid #ccc;
+      margin: 0 auto;
+      margin-top: 20px;
+      position: relative;
+      background: #fafafa;
+    }
+    .node {
+      position: absolute;
+      width: 120px;
+      height: 40px;
+      background: #f0f0f0;
+      border: 1px solid #333;
+      cursor: move;
+      text-align: center;
+      line-height: 40px;
+    }
+  </style>
+</head>
+<body>
+  <h1 style="text-align:center">Simple Flowchart Builder</h1>
+  
+  <div style="text-align:center">
+    <button id="add-api-call-btn">Add API Call</button>
+    <button id="add-decision-btn">Add Decision</button>
+    <button id="save-flow-btn">Save Flow</button>
+    <button id="generate-code-btn">Generate Code</button>
+  </div>
+
+  <div id="flowchart-area"></div>
+
+  <script>
+    // This array holds our "nodes" in memory
+    let nodes = [];
+    // For simplicity, we'll store edges in an array, but won't actually connect them graphically
+    let edges = [];
+
+    // Node creation
+    document.getElementById('add-api-call-btn').addEventListener('click', () => {
+      createNode('APICall');
+    });
+    document.getElementById('add-decision-btn').addEventListener('click', () => {
+      createNode('Decision');
+    });
+
+    // A simple unique ID generator
+    function generateId() {
+      return Math.floor(Math.random() * 1000000);
+    }
+
+    function createNode(type) {
+      const nodeId = generateId();
+      const nodeElement = document.createElement('div');
+      nodeElement.className = 'node';
+      nodeElement.innerHTML = type + ' (ID: ' + nodeId + ')';
+      nodeElement.style.top = '50px';
+      nodeElement.style.left = '50px';
+
+      // Basic drag functionality
+      let offsetX, offsetY;
+      nodeElement.addEventListener('mousedown', onMouseDown);
+      function onMouseDown(e) {
+        offsetX = e.offsetX;
+        offsetY = e.offsetY;
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+      }
+      function onMouseMove(e) {
+        nodeElement.style.top = (e.clientY - offsetY) + 'px';
+        nodeElement.style.left = (e.clientX - offsetX) + 'px';
+      }
+      function onMouseUp(e) {
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+      }
+
+      // Add element to flowchart area
+      document.getElementById('flowchart-area').appendChild(nodeElement);
+
+      // Add to nodes array
+      nodes.push({
+        id: nodeId,
+        type: type,
+        endpoint: '/example',
+        method: 'GET',
+        condition: "True"
+      });
+    }
+
+    // Save Flow
+    document.getElementById('save-flow-btn').addEventListener('click', () => {
+      const flowId = prompt("Enter a Flow ID to save:");
+      if (!flowId) return;
+
+      const flowData = {
+        nodes: nodes,
+        edges: edges
+      };
+
+      fetch('/save_flow', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ flowId, flowData })
+      })
+      .then(response => response.json())
+      .then(data => {
+        if (data.message) {
+          alert(data.message);
+        }
+      })
+      .catch(err => console.error(err));
+    });
+
+    // Generate Code
+    document.getElementById('generate-code-btn').addEventListener('click', () => {
+      const flowId = prompt("Enter the Flow ID to generate code from:");
+      if (!flowId) return;
+
+      // We open the generated code in a new window/tab (from our /generate_code/<flow_id> route).
+      window.open('/generate_code/' + flowId, '_blank');
+    });
+  </script>
+</body>
+</html>
