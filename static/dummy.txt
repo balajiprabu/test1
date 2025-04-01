@@ -1,0 +1,105 @@
+import json
+from collections import defaultdict, Counter
+from typing import List
+import pandas as pd
+
+# === 1. Flatten JSON with Global Exclusion by Suffix ===
+def flatten_json_exclude(y, exclude_suffixes=None, parent_key='', sep='.'):
+    exclude_suffixes = exclude_suffixes or []
+    items = []
+
+    if isinstance(y, dict):
+        for k, v in y.items():
+            new_key = f"{parent_key}{sep}{k}" if parent_key else k
+            if any(new_key.endswith(suffix) for suffix in exclude_suffixes):
+                continue
+            items.extend(flatten_json_exclude(v, exclude_suffixes, new_key, sep=sep).items())
+    elif isinstance(y, list):
+        for i, v in enumerate(y):
+            new_key = f"{parent_key}{sep}{i}" if parent_key else str(i)
+            items.extend(flatten_json_exclude(v, exclude_suffixes, new_key, sep=sep).items())
+    else:
+        if not any(parent_key.endswith(suffix) for suffix in exclude_suffixes):
+            items.append((parent_key, y))
+    return dict(items)
+
+# === 2. Summarize Fields for User Review ===
+def summarize_fields_for_user(docs, exclude_suffixes=None):
+    field_stats = defaultdict(lambda: {
+        "count": 0,
+        "examples": Counter(),
+        "types": Counter()
+    })
+
+    for doc in docs:
+        flat = flatten_json_exclude(doc, exclude_suffixes=exclude_suffixes)
+        for key, value in flat.items():
+            field_stats[key]["count"] += 1
+            field_stats[key]["examples"][str(value)] += 1
+            field_stats[key]["types"][type(value).__name__] += 1
+
+    summary = []
+    total_docs = len(docs)
+    for field, stat in field_stats.items():
+        summary.append({
+            "field": field,
+            "type": stat["types"].most_common(1)[0][0],
+            "doc_coverage": stat["count"],
+            "coverage_percent": round(100 * stat["count"] / total_docs, 1),
+            "unique_values": len(stat["examples"]),
+            "examples": ", ".join(list(stat["examples"].keys())[:3]),
+            "enum_like": len(stat["examples"]) <= 10
+        })
+
+    return pd.DataFrame(summary).sort_values(by="coverage_percent", ascending=False)
+
+# === 3. Match User Field Suffixes to Actual Keys ===
+def match_suffix_fields(flat_doc, user_fields: List[str]) -> dict:
+    matched = {}
+    for user_field in user_fields:
+        for k in flat_doc.keys():
+            if k.endswith(user_field):
+                matched[user_field] = k
+                break
+    return matched
+
+# === 4. Sample One Document per Unique Field Combination ===
+def sample_by_field_suffix_combination(docs: List[dict], sampling_fields: List[str], exclude_suffixes=None) -> List[dict]:
+    seen_combinations = set()
+    selected_docs = []
+
+    for doc in docs:
+        flat = flatten_json_exclude(doc, exclude_suffixes)
+        matched_fields = match_suffix_fields(flat, sampling_fields)
+
+        combo = tuple(flat.get(matched_fields.get(field, ""), None) for field in sampling_fields)
+        if combo not in seen_combinations:
+            selected_docs.append(doc)
+            seen_combinations.add(combo)
+
+    return selected_docs
+
+# === 5. Example: Putting it Together ===
+if __name__ == "__main__":
+    # Load your JSON data (expects a list of dicts)
+    with open("your_input_data.json", "r") as f:
+        docs = json.load(f)
+
+    # A. Define fields to exclude globally (by suffix)
+    exclude_fields = ["metadata.id", "session.token", "metadata.timestamp"]
+
+    # B. Generate field summary and save it for review
+    field_summary = summarize_fields_for_user(docs, exclude_suffixes=exclude_fields)
+    field_summary.to_csv("field_summary.csv", index=False)
+    print("Saved field summary to field_summary.csv")
+
+    # === After reviewing field_summary.csv, update the fields below ===
+    sampling_fields = ["trip.mode", "trip.time_of_day"]  # example fields
+
+    # C. Sample one document per unique field combination
+    samples = sample_by_field_suffix_combination(docs, sampling_fields, exclude_suffixes=exclude_fields)
+
+    # D. Save results
+    with open("sampled_output.json", "w") as f:
+        json.dump(samples, f, indent=2)
+    print(f"Saved {len(samples)} sampled documents to sampled_output.json")
