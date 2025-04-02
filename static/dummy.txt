@@ -5,7 +5,7 @@ from datetime import date, timedelta
 import random
 import pandas as pd
 
-# --- 1. Flatten JSON with exclusion ---
+# --- Flatten JSON with global exclusion ---
 def flatten_json_exclude(y, exclude_suffixes: Optional[List[str]] = None, parent_key='', sep='.') -> Dict[str, any]:
     exclude_suffixes = exclude_suffixes or []
     items = []
@@ -25,7 +25,7 @@ def flatten_json_exclude(y, exclude_suffixes: Optional[List[str]] = None, parent
             items.append((parent_key, y))
     return dict(items)
 
-# --- 2. Field summary ---
+# --- Field Summary Generator ---
 def summarize_fields_for_user(docs, exclude_suffixes=None):
     field_stats = defaultdict(lambda: {
         "count": 0,
@@ -55,23 +55,30 @@ def summarize_fields_for_user(docs, exclude_suffixes=None):
 
     return pd.DataFrame(summary).sort_values(by="coverage_percent", ascending=False)
 
-# --- 3. Sampling by field suffixes ---
-def match_suffix_fields(flat_doc, user_fields: List[str]) -> dict:
+# --- Match user sampling fields to actual flattened keys (with inclusion) ---
+def match_suffix_fields_with_inclusion(flat_doc, user_fields: List[str], include_suffixes: Optional[List[str]] = None) -> dict:
     matched = {}
     for user_field in user_fields:
         for k in flat_doc.keys():
             if k.endswith(user_field):
-                matched[user_field] = k
-                break
+                if include_suffixes is None or any(k.endswith(suf) for suf in include_suffixes):
+                    matched[user_field] = k
+                    break
     return matched
 
-def sample_by_field_suffix_combination(docs: List[dict], sampling_fields: List[str], exclude_suffixes=None) -> List[dict]:
+# --- Suffix-based Sampling with Inclusion + Exclusion ---
+def sample_by_field_suffix_combination_with_inclusion(
+    docs: List[dict],
+    sampling_fields: List[str],
+    include_suffixes: Optional[List[str]] = None,
+    exclude_suffixes: Optional[List[str]] = None
+) -> List[dict]:
     seen_combinations = set()
     selected_docs = []
 
     for doc in docs:
         flat = flatten_json_exclude(doc, exclude_suffixes)
-        matched_fields = match_suffix_fields(flat, sampling_fields)
+        matched_fields = match_suffix_fields_with_inclusion(flat, sampling_fields, include_suffixes)
         combo = tuple(flat.get(matched_fields.get(field, ""), None) for field in sampling_fields)
         if combo not in seen_combinations:
             selected_docs.append(doc)
@@ -79,61 +86,7 @@ def sample_by_field_suffix_combination(docs: List[dict], sampling_fields: List[s
 
     return selected_docs
 
-# --- 4. Sampling by synthetic field pairs ---
-def extract_synthetic_pairs(doc: dict, left_prefix: str, right_prefix: str) -> Set[str]:
-    synthetic_pairs = set()
-    flat = flatten_json_exclude(doc)
-
-    left_map = {}
-    right_map = {}
-
-    for k, v in flat.items():
-        if k.startswith(left_prefix + ".") and k[len(left_prefix) + 1:].isdigit():
-            idx = k.split(".")[-1]
-            left_map[idx] = v
-        elif k.startswith(right_prefix + ".") and k[len(right_prefix) + 1:].isdigit():
-            idx = k.split(".")[-1]
-            right_map[idx] = v
-
-    for idx in set(left_map.keys()).intersection(right_map.keys()):
-        synthetic_pairs.add(f"{str(right_map[idx])}@{str(left_map[idx])}")
-
-    return synthetic_pairs
-
-def sample_by_parallel_pairs(docs: List[dict], left_prefix: str, right_prefix: str) -> List[dict]:
-    all_pairs = {}
-    for i, doc in enumerate(docs):
-        pairs = extract_synthetic_pairs(doc, left_prefix, right_prefix)
-        for p in pairs:
-            all_pairs.setdefault(p, set()).add(i)
-
-    uncovered = set(all_pairs.keys())
-    selected_docs = []
-    used_docs = set()
-
-    while uncovered:
-        best_doc = None
-        best_coverage = set()
-
-        for i, doc in enumerate(docs):
-            if i in used_docs:
-                continue
-            doc_pairs = extract_synthetic_pairs(doc, left_prefix, right_prefix)
-            coverage = uncovered.intersection(doc_pairs)
-            if len(coverage) > len(best_coverage):
-                best_doc = i
-                best_coverage = coverage
-
-        if best_doc is not None:
-            selected_docs.append(docs[best_doc])
-            used_docs.add(best_doc)
-            uncovered -= best_coverage
-        else:
-            break
-
-    return selected_docs
-
-# --- 5. Example usage with synthetic data ---
+# --- Synthetic demo data generator ---
 def generate_synthetic_docs(n=50):
     base_date = date(2025, 3, 1)
     docs = []
@@ -149,27 +102,30 @@ def generate_synthetic_docs(n=50):
         docs.append(doc)
     return docs
 
+# --- MAIN: Example usage ---
 if __name__ == "__main__":
-    # Step 0: Load or generate data
+    # 1. Load or generate data
     docs = generate_synthetic_docs()
 
-    # Step 1: Field summary
-    exclude_fields = ["meta.session_id"]
-    summary_df = summarize_fields_for_user(docs, exclude_suffixes=exclude_fields)
+    # 2. Define field rules
+    exclude_suffixes = ["meta.session_id"]
+    include_suffixes = ["A.B.1", "A.X.1"]
+    sampling_fields = ["A.B.1", "A.X.1"]
+
+    # 3. Field summary (for inspection)
+    summary_df = summarize_fields_for_user(docs, exclude_suffixes=exclude_suffixes)
     summary_df.to_csv("field_summary.csv", index=False)
     print("Saved field summary to field_summary.csv")
 
-    # Step 2: Choose one mode — update these based on what you want
+    # 4. Sampling by suffix with inclusion
+    sampled_docs = sample_by_field_suffix_combination_with_inclusion(
+        docs,
+        sampling_fields=sampling_fields,
+        include_suffixes=include_suffixes,
+        exclude_suffixes=exclude_suffixes
+    )
 
-    # Option A: Sample by suffix fields
-    suffix_fields = ["A.X.1", "A.B.1"]  # user-selected fields
-    suffix_samples = sample_by_field_suffix_combination(docs, suffix_fields, exclude_suffixes=exclude_fields)
-    with open("samples_by_suffix.json", "w") as f:
-        json.dump(suffix_samples, f, indent=2)
-    print(f"Saved {len(suffix_samples)} suffix-based samples to samples_by_suffix.json")
-
-    # Option B: Sample by synthetic field pair (e.g., transport@date)
-    pair_samples = sample_by_parallel_pairs(docs, left_prefix="A.B", right_prefix="A.X")
-    with open("samples_by_pair.json", "w") as f:
-        json.dump(pair_samples, f, indent=2)
-    print(f"Saved {len(pair_samples)} synthetic-pair-based samples to samples_by_pair.json")
+    # 5. Output
+    with open("sampled_output.json", "w") as f:
+        json.dump(sampled_docs, f, indent=2)
+    print(f"Saved {len(sampled_docs)} documents to sampled_output.json")
